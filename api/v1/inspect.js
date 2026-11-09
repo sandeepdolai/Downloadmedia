@@ -1,5 +1,3 @@
-export const config = { api: { bodyParser: { sizeLimit: '256kb' } } };
-
 import {
   ApiError,
   forwardJsonToEngine,
@@ -10,6 +8,9 @@ import {
   sendApiError,
   sendJson
 } from '../_lib/media.js';
+
+export const config = { api: { bodyParser: { sizeLimit: '256kb' } } };
+
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
