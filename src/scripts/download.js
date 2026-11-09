@@ -48,14 +48,14 @@ async function readApiResponse(response) {
 }
 
 function validateCookiesText(value) {
-  const normalized = value.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n');
-  const lines = normalized.split(/\\r?\\n/);
+  const normalized = value.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const lines = normalized.split(/\r?\n/);
   if (!['# Netscape HTTP Cookie File', '# HTTP Cookie File'].includes(lines[0]?.trim())) {
     throw new Error('That file is not a Netscape-format cookies.txt file.');
   }
   const validRows = lines.slice(1).filter((line) => {
     if (!line || (line.startsWith('#') && !line.startsWith('#HttpOnly_'))) return false;
-    const fields = (line.startsWith('#HttpOnly_') ? line.slice(10) : line).split('\\t');
+    const fields = (line.startsWith('#HttpOnly_') ? line.slice(10) : line).split('\t');
     return fields.length === 7 && ['TRUE', 'FALSE'].includes(fields[1].toUpperCase()) &&
       ['TRUE', 'FALSE'].includes(fields[3].toUpperCase()) && Boolean(fields[5]);
   });
