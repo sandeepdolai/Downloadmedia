@@ -8,7 +8,7 @@ const resultMeta = document.querySelector('#download-result-meta');
 const formatSelect = document.querySelector('#download-format');
 const selectedDownloadButton = document.querySelector('#download-selected');
 
-const apiBase = (downloadForm?.dataset.apiBase || '').replace(/\\/+$/, '');
+const apiBase = (downloadForm?.dataset.apiBase || '').replace(/\/+$/, '');
 let inspectedMedia = null;
 
 // The preview is inserted immediately below the paste box, so the layout
@@ -90,7 +90,7 @@ function getPreviewSource(rawUrl) {
     throw new Error('Only public web links can be previewed.');
   }
 
-  const host = url.hostname.toLowerCase().replace(/^www\\./, '');
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
   const pathParts = url.pathname.split('/').filter(Boolean);
 
   // YouTube videos, Shorts, live streams and youtu.be links.
@@ -108,7 +108,7 @@ function getPreviewSource(rawUrl) {
 
   // Vimeo.
   if (host === 'vimeo.com' || host === 'player.vimeo.com') {
-    const id = pathParts.find((part) => /^\\d{6,12}$/.test(part));
+    const id = pathParts.find((part) => /^\d{6,12}$/.test(part));
     if (id) return { type: 'iframe', src: `https://player.vimeo.com/video/${id}` };
   }
 
@@ -134,7 +134,7 @@ function getPreviewSource(rawUrl) {
   if (host === 'tiktok.com') {
     const videoIndex = pathParts.indexOf('video');
     const id = videoIndex >= 0 ? pathParts[videoIndex + 1] : '';
-    if (id && /^\\d+$/.test(id)) {
+    if (id && /^\d+$/.test(id)) {
       return { type: 'iframe', src: `https://www.tiktok.com/player/v1/${id}?music_info=1&description=1` };
     }
   }
@@ -149,7 +149,7 @@ function getPreviewSource(rawUrl) {
   }
 
   // Direct video files can be previewed by the browser without an iframe.
-  const extension = url.pathname.toLowerCase().match(/\\.([a-z0-9]{2,5})$/)?.[1] || '';
+  const extension = url.pathname.toLowerCase().match(/\.([a-z0-9]{2,5})$/)?.[1] || '';
   if (['mp4', 'm4v', 'webm', 'mov', 'ogv', 'm3u8'].includes(extension)) {
     return { type: 'video', src: url.toString() };
   }
