@@ -1,13 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "api/v1/inspect.js": {
-      "maxDuration": 90
-    },
-    "api/v1/download.js": {
-      "maxDuration": 300
-    }
-  },
   "regions": [
     "bom1"
   ],
