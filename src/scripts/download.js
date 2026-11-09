@@ -11,28 +11,6 @@ const selectedDownloadButton = document.querySelector('#download-selected');
 const apiBase = (downloadForm?.dataset.apiBase || '').replace(/\/+$/, '');
 let inspectedMedia = null;
 
-// The preview is inserted immediately below the paste box, so the layout
-// stays compact and the rest of the existing landing page is untouched.
-const previewPanel = document.createElement('section');
-previewPanel.className = 'media-preview';
-previewPanel.id = 'media-preview';
-previewPanel.setAttribute('aria-label', 'Media preview');
-previewPanel.hidden = true;
-
-const previewHeading = document.createElement('div');
-previewHeading.className = 'media-preview-heading';
-previewHeading.textContent = 'Video preview';
-
-const previewFrame = document.createElement('div');
-previewFrame.className = 'media-preview-frame';
-
-const previewNote = document.createElement('p');
-previewNote.className = 'media-preview-note';
-previewNote.textContent = 'Preview availability depends on the source website.';
-
-previewPanel.append(previewHeading, previewFrame, previewNote);
-downloadForm?.insertAdjacentElement('afterend', previewPanel);
-
 function showFeedback(message, isError = false) {
   if (!feedback) return;
   feedback.textContent = message;
@@ -79,130 +57,6 @@ function populateFormats(formats) {
   }
 }
 
-function getPreviewSource(rawUrl) {
-  let url;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new Error('Enter a valid media link to preview it.');
-  }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('Only public web links can be previewed.');
-  }
-
-  const host = url.hostname.toLowerCase().replace(/^www\./, '');
-  const pathParts = url.pathname.split('/').filter(Boolean);
-
-  // YouTube videos, Shorts, live streams and youtu.be links.
-  if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com') {
-    let id = url.searchParams.get('v');
-    if (host === 'youtu.be') id = pathParts[0];
-    if (!id) {
-      const marker = pathParts.findIndex((part) => ['shorts', 'embed', 'live', 'v'].includes(part));
-      if (marker >= 0) id = pathParts[marker + 1];
-    }
-    if (id && /^[A-Za-z0-9_-]{6,20}$/.test(id)) {
-      return { type: 'iframe', src: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0` };
-    }
-  }
-
-  // Vimeo.
-  if (host === 'vimeo.com' || host === 'player.vimeo.com') {
-    const id = pathParts.find((part) => /^\d{6,12}$/.test(part));
-    if (id) return { type: 'iframe', src: `https://player.vimeo.com/video/${id}` };
-  }
-
-  // Dailymotion and dai.ly.
-  if (host === 'dailymotion.com' || host === 'dai.ly') {
-    let id = pathParts[0] === 'video' ? pathParts[1] : pathParts[0];
-    if (id && /^[A-Za-z0-9]+$/.test(id)) {
-      return { type: 'iframe', src: `https://www.dailymotion.com/embed/video/${encodeURIComponent(id)}` };
-    }
-  }
-
-  // Instagram public posts, reels and IGTV clips.
-  if (host === 'instagram.com') {
-    const kindIndex = pathParts.findIndex((part) => ['p', 'reel', 'reels', 'tv'].includes(part));
-    const shortcode = kindIndex >= 0 ? pathParts[kindIndex + 1] : '';
-    if (shortcode && /^[A-Za-z0-9_-]+$/.test(shortcode)) {
-      const kind = pathParts[kindIndex] === 'reels' ? 'reel' : pathParts[kindIndex];
-      return { type: 'iframe', src: `https://www.instagram.com/${kind}/${encodeURIComponent(shortcode)}/embed/` };
-    }
-  }
-
-  // TikTok public videos.
-  if (host === 'tiktok.com') {
-    const videoIndex = pathParts.indexOf('video');
-    const id = videoIndex >= 0 ? pathParts[videoIndex + 1] : '';
-    if (id && /^\d+$/.test(id)) {
-      return { type: 'iframe', src: `https://www.tiktok.com/player/v1/${id}?music_info=1&description=1` };
-    }
-  }
-
-  // Facebook video plugin.
-  if (host === 'facebook.com' || host === 'fb.watch') {
-    const embed = new URL('https://www.facebook.com/plugins/video.php');
-    embed.searchParams.set('href', url.toString());
-    embed.searchParams.set('show_text', 'false');
-    embed.searchParams.set('width', '960');
-    return { type: 'iframe', src: embed.toString() };
-  }
-
-  // Direct video files can be previewed by the browser without an iframe.
-  const extension = url.pathname.toLowerCase().match(/\.([a-z0-9]{2,5})$/)?.[1] || '';
-  if (['mp4', 'm4v', 'webm', 'mov', 'ogv', 'm3u8'].includes(extension)) {
-    return { type: 'video', src: url.toString() };
-  }
-
-  // For other public pages, try their own embedded player. Some hosts block
-  // iframe embedding; the download inspection still runs independently.
-  return { type: 'iframe', src: url.toString(), generic: true };
-}
-
-function showPreview(rawUrl) {
-  previewFrame.replaceChildren();
-  previewNote.textContent = 'Preview availability depends on the source website.';
-
-  let source;
-  try {
-    source = getPreviewSource(rawUrl);
-  } catch (error) {
-    previewPanel.hidden = false;
-    previewNote.textContent = error instanceof Error ? error.message : 'This link cannot be previewed.';
-    return;
-  }
-
-  if (source.type === 'video') {
-    const video = document.createElement('video');
-    video.className = 'media-preview-player';
-    video.controls = true;
-    video.playsInline = true;
-    video.preload = 'metadata';
-    video.src = source.src;
-    video.setAttribute('aria-label', 'Media preview player');
-    video.addEventListener('error', () => {
-      previewNote.textContent = 'This video format cannot be previewed in this browser. You can still use the download options if the link is supported.';
-    }, { once: true });
-    previewFrame.append(video);
-  } else {
-    const iframe = document.createElement('iframe');
-    iframe.className = 'media-preview-player';
-    iframe.src = source.src;
-    iframe.title = 'Embedded media preview';
-    iframe.loading = 'lazy';
-    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
-    iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
-    iframe.allowFullscreen = true;
-    if (source.generic) {
-      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
-      previewNote.textContent = 'If the source website blocks embedding, its preview may not appear here.';
-    }
-    previewFrame.append(iframe);
-  }
-
-  previewPanel.hidden = false;
-}
-
 if (
   downloadForm instanceof HTMLFormElement &&
   mediaUrl instanceof HTMLInputElement &&
@@ -231,9 +85,8 @@ if (
 
     inspectedMedia = null;
     resultsPanel.hidden = true;
-    showPreview(url);
     setInspecting(true);
-    showFeedback('Loading the video preview and checking your link...');
+    showFeedback('Checking your media link...');
 
     try {
       const response = await fetch(`${apiBase}/v1/inspect`, {
@@ -296,8 +149,6 @@ if (
   mediaUrl.addEventListener('input', () => {
     inspectedMedia = null;
     resultsPanel.hidden = true;
-    previewPanel.hidden = true;
-    previewFrame.replaceChildren();
     showFeedback('');
   });
 }
