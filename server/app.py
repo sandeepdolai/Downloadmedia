@@ -31,6 +31,8 @@ SERVICE_NAME = "memorableday-downloader-api"
 MAX_DOWNLOAD_BYTES = max(1, int(os.getenv("MAX_DOWNLOAD_MB", "300"))) * 1024 * 1024
 MAX_DOWNLOAD_SECONDS = max(60, int(os.getenv("MAX_DOWNLOAD_SECONDS", "900")))
 MAX_CONCURRENT_DOWNLOADS = max(1, int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "2")))
+MAX_COOKIE_FILE_BYTES = 64 * 1024
+MAX_REQUEST_BODY_BYTES = 256 * 1024
 SOCKET_TIMEOUT = max(5, int(os.getenv("YT_DLP_SOCKET_TIMEOUT", "20")))
 PROBE_TIMEOUT = max(3.0, float(os.getenv("PROBE_TIMEOUT", "8")))
 PAGE_TIMEOUT = max(3.0, float(os.getenv("PAGE_TIMEOUT", "12")))
@@ -90,6 +92,73 @@ RATE_LOCK = Lock()
 
 class InspectRequest(BaseModel):
     url: str = Field(min_length=8, max_length=4096)
+    cookies: str | None = Field(default=None, max_length=MAX_COOKIE_FILE_BYTES)
+    user_agent: str | None = Field(default=None, max_length=512)
+
+
+
+def validate_cookie_text(value: str | None) -> str | None:
+    """Validate a user-supplied Netscape cookies.txt without logging its contents."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="The cookies file is invalid.")
+    text = value.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    if len(text.encode("utf-8")) > MAX_COOKIE_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="The cookies file must be 64 KB or smaller.")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() not in {"# Netscape HTTP Cookie File", "# HTTP Cookie File"}:
+        raise HTTPException(status_code=400, detail="Upload a Netscape-format cookies.txt file.")
+    valid_rows = 0
+    for line in lines[1:]:
+        if not line:
+            continue
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if (
+            len(fields) == 7
+            and fields[1].upper() in {"TRUE", "FALSE"}
+            and fields[3].upper() in {"TRUE", "FALSE"}
+            and bool(fields[5])
+        ):
+            valid_rows += 1
+    if valid_rows == 0:
+        raise HTTPException(status_code=400, detail="The cookies file contains no valid cookie entries.")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def validate_user_agent(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="The browser user-agent is invalid.")
+    value = value.strip()
+    if len(value) > 512 or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise HTTPException(status_code=400, detail="The browser user-agent is invalid.")
+    return value or None
+
+
+def write_cookie_file(directory: str | Path, cookies_text: str | None) -> str | None:
+    cookies_text = validate_cookie_text(cookies_text)
+    if not cookies_text:
+        return None
+    path = Path(directory) / "memorableday-session-cookies.txt"
+    path.write_text(cookies_text, encoding="utf-8", newline="\n")
+    path.chmod(0o600)
+    return str(path)
+
+
+def inspect_with_session(url: str, cookies_text: str | None = None, user_agent: str | None = None) -> dict:
+    cookies_text = validate_cookie_text(cookies_text)
+    user_agent = validate_user_agent(user_agent)
+    if not cookies_text:
+        return inspect_universal(url, user_agent=user_agent)
+    with tempfile.TemporaryDirectory(prefix="memorableday-inspect-") as directory:
+        cookie_file = write_cookie_file(directory, cookies_text)
+        return inspect_universal(url, cookie_file=cookie_file, user_agent=user_agent)
 
 
 def enforce_rate_limit(request: Request, action: str) -> None:
@@ -274,8 +343,8 @@ class QuietLogger:
         pass
 
 
-def ydl_base_options() -> dict:
-    return {
+def ydl_base_options(cookie_file: str | None = None, user_agent: str | None = None) -> dict:
+    options = {
         "quiet": True,
         "no_warnings": True,
         "no_color": True,
@@ -291,16 +360,21 @@ def ydl_base_options() -> dict:
         "geo_bypass": False,
         "nocheckcertificate": False,
     }
+    if cookie_file:
+        options["cookiefile"] = cookie_file
+    if user_agent:
+        options["http_headers"] = {"User-Agent": user_agent}
+    return options
 
 
-def extract_metadata(url: str) -> dict:
-    options = ydl_base_options()
+def extract_metadata(url: str, cookie_file: str | None = None, user_agent: str | None = None) -> dict:
+    options = ydl_base_options(cookie_file, user_agent)
     options["skip_download"] = True
     try:
         with yt_dlp.YoutubeDL(options) as downloader:
             info = downloader.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as error:
-        raise HTTPException(status_code=422, detail=friendly_extractor_error(str(error)))
+        raise HTTPException(status_code=422, detail=friendly_extractor_error(str(error), has_cookies=bool(cookie_file)))
     except HTTPException:
         raise
     except Exception:
@@ -314,10 +388,12 @@ def extract_metadata(url: str) -> dict:
     return info
 
 
-def friendly_extractor_error(message: str) -> str:
+def friendly_extractor_error(message: str, has_cookies: bool = False) -> str:
     lowered = message.lower()
     if any(term in lowered for term in ("private video", "login", "sign in", "authentication", "members-only")):
-        return "This media requires an account or permission that MemorableDay does not have."
+        if has_cookies:
+            return "The supplied session did not grant access. It may be expired, lack permission, or be restricted by the source website."
+        return "This source requires a signed-in session. For media you are authorized to access, add your own valid cookies.txt file and try again."
     if any(term in lowered for term in ("unsupported url", "no suitable extractor", "not a valid url")):
         return "This website or link is not currently supported by the extraction engine."
     if any(term in lowered for term in ("drm", "widevine", "fairplay", "playready")):
@@ -342,8 +418,8 @@ def is_terminal_error(detail: str) -> bool:
     return any(phrase in str(detail) for phrase in TERMINAL_ERROR_PHRASES)
 
 
-def inspect_media(url: str) -> dict:
-    info = extract_metadata(url)
+def inspect_media(url: str, cookie_file: str | None = None, user_agent: str | None = None) -> dict:
+    info = extract_metadata(url, cookie_file, user_agent)
     formats = build_format_options(info)
     raw_formats = info.get("formats") or []
     size_candidates = [
@@ -837,7 +913,7 @@ def build_scraped_formats(probed: list[ProbedMedia]) -> list[dict[str, str | boo
     return options[:12]
 
 
-def _iframe_fallback(iframes: list[str], base_url: str, title: str, deadline: float) -> dict | None:
+def _iframe_fallback(iframes: list[str], base_url: str, title: str, deadline: float, cookie_file: str | None = None, user_agent: str | None = None) -> dict | None:
     checked = 0
     for iframe in iframes:
         if checked >= 2 or time.monotonic() >= deadline:
@@ -848,7 +924,7 @@ def _iframe_fallback(iframes: list[str], base_url: str, title: str, deadline: fl
         except HTTPException:
             continue
         try:
-            result = inspect_media(absolute)
+            result = inspect_media(absolute, cookie_file, user_agent)
         except HTTPException:
             checked += 1
             continue
@@ -858,7 +934,7 @@ def _iframe_fallback(iframes: list[str], base_url: str, title: str, deadline: fl
     return None
 
 
-def scrape_page_media(url: str, deadline: float) -> dict | None:
+def scrape_page_media(url: str, deadline: float, cookie_file: str | None = None, user_agent: str | None = None) -> dict | None:
     page = fetch_page(url)
     if page is None:
         return None
@@ -882,7 +958,7 @@ def scrape_page_media(url: str, deadline: float) -> dict | None:
             }
 
     if page_media.iframes:
-        fallback = _iframe_fallback(page_media.iframes, final_url, title, deadline)
+        fallback = _iframe_fallback(page_media.iframes, final_url, title, deadline, cookie_file, user_agent)
         if fallback is not None:
             return fallback
     return None
@@ -893,7 +969,7 @@ def scrape_page_media(url: str, deadline: float) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def inspect_universal(url: str) -> dict:
+def inspect_universal(url: str, cookie_file: str | None = None, user_agent: str | None = None) -> dict:
     deadline = time.monotonic() + INSPECT_BUDGET_SECONDS
 
     direct = probe_media_url(url)
@@ -903,7 +979,7 @@ def inspect_universal(url: str) -> dict:
     tier2_error: HTTPException | None = None
     if direct is None or direct.kind in {"manifest", "html"}:
         try:
-            return inspect_media(url)
+            return inspect_media(url, cookie_file, user_agent)
         except HTTPException as error:
             if error.status_code not in {402, 403, 422, 429, 500, 502, 503, 504}:
                 raise
@@ -916,7 +992,7 @@ def inspect_universal(url: str) -> dict:
             raise tier2_error
         raise HTTPException(status_code=504, detail="Checking this link is taking too long. Please try again.")
 
-    scraped = scrape_page_media(url, deadline)
+    scraped = scrape_page_media(url, deadline, cookie_file, user_agent)
     if scraped is not None:
         return scraped
 
@@ -935,37 +1011,44 @@ def safe_filename(value: str, extension: str) -> str:
     return f"{title}{suffix.lower()}"
 
 
-def download_to_temp(url: str, format_id: str) -> tuple[str, str, str, str]:
-    metadata = extract_metadata(url)
-    plan = _format_plan(format_id, metadata)
+def download_to_temp(url: str, format_id: str, cookies_text: str | None = None, user_agent: str | None = None) -> tuple[str, str, str, str]:
     temp_dir = tempfile.mkdtemp(prefix="memorableday-")
-    output_template = str(Path(temp_dir) / "download.%(ext)s")
-    started = time.monotonic()
-
-    def progress_hook(data: dict) -> None:
-        if time.monotonic() - started > MAX_DOWNLOAD_SECONDS:
-            raise yt_dlp.utils.DownloadError("The download exceeded the configured time limit.")
-        downloaded = int(data.get("downloaded_bytes") or 0)
-        if downloaded > MAX_DOWNLOAD_BYTES:
-            raise yt_dlp.utils.DownloadError("The download exceeded the configured file-size limit.")
-
-    options = ydl_base_options()
-    options.update(
-        {
-            "format": plan["format"],
-            "outtmpl": output_template,
-            "max_filesize": MAX_DOWNLOAD_BYTES,
-            "nopart": True,
-            "overwrites": True,
-            "progress_hooks": [progress_hook],
-        }
-    )
-    if plan.get("postprocessors"):
-        options["postprocessors"] = plan["postprocessors"]
-
+    cookie_file = None
     try:
+        cookie_file = write_cookie_file(temp_dir, cookies_text)
+        metadata = extract_metadata(url, cookie_file, user_agent)
+        plan = _format_plan(format_id, metadata)
+        output_template = str(Path(temp_dir) / "download.%(ext)s")
+        started = time.monotonic()
+
+        def progress_hook(data: dict) -> None:
+            if time.monotonic() - started > MAX_DOWNLOAD_SECONDS:
+                raise yt_dlp.utils.DownloadError("The download exceeded the configured time limit.")
+            downloaded = int(data.get("downloaded_bytes") or 0)
+            if downloaded > MAX_DOWNLOAD_BYTES:
+                raise yt_dlp.utils.DownloadError("The download exceeded the configured file-size limit.")
+
+        options = ydl_base_options(cookie_file, user_agent)
+        options.update(
+            {
+                "format": plan["format"],
+                "outtmpl": output_template,
+                "max_filesize": MAX_DOWNLOAD_BYTES,
+                "nopart": True,
+                "overwrites": True,
+                "progress_hooks": [progress_hook],
+            }
+        )
+        if plan.get("postprocessors"):
+            options["postprocessors"] = plan["postprocessors"]
+
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.extract_info(url, download=True)
+
+        # Remove the account session as soon as extraction/download completes.
+        if cookie_file:
+            Path(cookie_file).unlink(missing_ok=True)
+            cookie_file = None
 
         candidates = [
             item
@@ -987,7 +1070,7 @@ def download_to_temp(url: str, format_id: str) -> tuple[str, str, str, str]:
         return temp_dir, str(output_path), filename, media_type
     except yt_dlp.utils.DownloadError as error:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=422, detail=friendly_extractor_error(str(error)))
+        raise HTTPException(status_code=422, detail=friendly_extractor_error(str(error), has_cookies=bool(cookies_text)))
     except HTTPException:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
@@ -1076,21 +1159,24 @@ def resolve_scraped_candidate(url: str, index: int) -> ProbedMedia:
     return probed[index - 1]
 
 
-def download_universal(url: str, format_id: str) -> tuple[str, str, str, str]:
+def download_universal(url: str, format_id: str, cookies_text: str | None = None, user_agent: str | None = None) -> tuple[str, str, str, str]:
+    has_session = bool(cookies_text)
     if format_id in {"best", "audio"} or re.fullmatch(r"p[0-9]{2,4}", format_id):
-        return download_to_temp(url, format_id)
+        return download_to_temp(url, format_id, cookies_text, user_agent)
 
     if format_id == "mp3":
-        direct = _safe_probe(url)
-        if direct is not None and direct.kind in {"video", "audio"}:
-            return direct_download_to_temp(direct, want_mp3=True)
-        return download_to_temp(url, "mp3")
+        if not has_session:
+            direct = _safe_probe(url)
+            if direct is not None and direct.kind in {"video", "audio"}:
+                return direct_download_to_temp(direct, want_mp3=True)
+        return download_to_temp(url, "mp3", cookies_text, user_agent)
 
     if format_id == "original":
-        direct = _safe_probe(url)
-        if direct is not None and direct.kind in {"video", "audio", "image"}:
-            return direct_download_to_temp(direct, want_mp3=False)
-        return download_to_temp(url, "best")
+        if not has_session:
+            direct = _safe_probe(url)
+            if direct is not None and direct.kind in {"video", "audio", "image"}:
+                return direct_download_to_temp(direct, want_mp3=False)
+        return download_to_temp(url, "best", cookies_text, user_agent)
 
     scraped_match = re.fullmatch(r"media-([0-9]+)(-mp3)?", format_id)
     if scraped_match:
@@ -1098,7 +1184,7 @@ def download_universal(url: str, format_id: str) -> tuple[str, str, str, str]:
         want_mp3 = bool(scraped_match.group(2))
         candidate = resolve_scraped_candidate(url, index)
         if candidate.kind == "manifest":
-            return download_to_temp(candidate.final_url, "mp3" if want_mp3 else "best")
+            return download_to_temp(candidate.final_url, "mp3" if want_mp3 else "best", cookies_text, user_agent)
         return direct_download_to_temp(candidate, want_mp3=want_mp3)
 
     raise HTTPException(status_code=400, detail="Choose a supported download format.")
@@ -1109,8 +1195,8 @@ def download_universal(url: str, format_id: str) -> tuple[str, str, str, str]:
 # ---------------------------------------------------------------------------
 
 
-async def parse_download_request(request: Request) -> tuple[str, str]:
-    if request.headers.get("content-length") and int(request.headers["content-length"]) > 16_384:
+async def parse_download_request(request: Request) -> tuple[str, str, str | None, str | None]:
+    if request.headers.get("content-length") and int(request.headers["content-length"]) > MAX_REQUEST_BODY_BYTES:
         raise HTTPException(status_code=413, detail="The download request is too large.")
     body = await request.body()
     content_type = request.headers.get("content-type", "").lower()
@@ -1125,9 +1211,16 @@ async def parse_download_request(request: Request) -> tuple[str, str]:
 
     url = payload.get("url") if isinstance(payload, dict) else None
     format_id = payload.get("format", "best") if isinstance(payload, dict) else "best"
+    cookies_text = payload.get("cookies") if isinstance(payload, dict) else None
+    user_agent = payload.get("user_agent") if isinstance(payload, dict) else None
     if not isinstance(url, str) or not isinstance(format_id, str):
         raise HTTPException(status_code=400, detail="Provide a media link and format.")
-    return validate_public_url(url), format_id
+    return (
+        validate_public_url(url),
+        format_id,
+        validate_cookie_text(cookies_text),
+        validate_user_agent(user_agent),
+    )
 
 
 @app.exception_handler(HTTPException)
@@ -1163,16 +1256,18 @@ async def health() -> dict:
 async def inspect_endpoint(payload: InspectRequest, request: Request) -> dict:
     enforce_rate_limit(request, "inspect")
     url = validate_public_url(payload.url)
-    return await asyncio.to_thread(inspect_universal, url)
+    return await asyncio.to_thread(inspect_with_session, url, payload.cookies, payload.user_agent)
 
 
 @app.post("/v1/download")
 async def download_endpoint(request: Request):
     enforce_rate_limit(request, "download")
-    url, format_id = await parse_download_request(request)
+    url, format_id, cookies_text, user_agent = await parse_download_request(request)
 
     async with DOWNLOAD_SEMAPHORE:
-        temp_dir, output_path, filename, media_type = await asyncio.to_thread(download_universal, url, format_id)
+        temp_dir, output_path, filename, media_type = await asyncio.to_thread(
+            download_universal, url, format_id, cookies_text, user_agent
+        )
 
     return FileResponse(
         output_path,

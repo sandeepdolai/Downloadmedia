@@ -10,6 +10,9 @@ from app import (
     _format_plan,
     _safe_probe,
     validate_public_url,
+    validate_cookie_text,
+    validate_user_agent,
+    ydl_base_options,
     ProbedMedia,
 )
 
@@ -211,6 +214,44 @@ class EngineEnvironmentTests(unittest.TestCase):
     def test_safe_probe_swallows_errors(self):
         # Invalid host cannot resolve; _safe_probe must return None, not raise.
         self.assertIsNone(_safe_probe("https://this-domain-definitely-does-not-exist-zzz.invalid/x.mp4"))
+
+
+class SessionCookieTests(unittest.TestCase):
+    COOKIE_TEXT = (
+        "# Netscape HTTP Cookie File\n"
+        ".example.com\tTRUE\t/\tTRUE\t1893456000\tsessionid\tsample-token\n"
+    )
+
+    def test_accepts_netscape_cookie_file_and_normalizes_newlines(self):
+        value = validate_cookie_text(self.COOKIE_TEXT.replace("\n", "\r\n"))
+        self.assertEqual(value, self.COOKIE_TEXT)
+
+    def test_rejects_json_cookie_export(self):
+        with self.assertRaises(HTTPException):
+            validate_cookie_text('{"cookies": []}')
+
+    def test_rejects_empty_netscape_file(self):
+        with self.assertRaises(HTTPException):
+            validate_cookie_text("# Netscape HTTP Cookie File\n# exported file\n")
+
+    def test_rejects_cookie_file_over_size_limit(self):
+        huge = "# Netscape HTTP Cookie File\n" + ("x" * (64 * 1024))
+        with self.assertRaises(HTTPException):
+            validate_cookie_text(huge)
+
+    def test_accepts_browser_user_agent(self):
+        value = "Mozilla/5.0 (Android 10; Mobile) Chrome/131.0.0.0"
+        self.assertEqual(validate_user_agent(value), value)
+
+    def test_rejects_control_characters_in_user_agent(self):
+        with self.assertRaises(HTTPException):
+            validate_user_agent("Mozilla/5.0\nInjected: header")
+
+    def test_yt_dlp_options_receive_cookie_file_and_user_agent(self):
+        options = ydl_base_options("/tmp/session.txt", "Mozilla/5.0 test")
+        self.assertEqual(options["cookiefile"], "/tmp/session.txt")
+        self.assertEqual(options["http_headers"]["User-Agent"], "Mozilla/5.0 test")
+
 
 
 if __name__ == "__main__":

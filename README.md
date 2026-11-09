@@ -35,7 +35,7 @@ All tiers share the same API contract, so the frontend never changes:
 
 ### Safety limits
 
-The engine only accepts public HTTP/HTTPS URLs, rejects local/private IP destinations on every request and redirect, disables playlist downloads, does not load browser cookies, and does not attempt DRM or authentication bypasses. It applies per-IP rate limits, a download-size limit (`MAX_DOWNLOAD_MB`, default 300 MB), a processing-time limit (`MAX_DOWNLOAD_SECONDS`, default 900 s) and an inspect deadline (`INSPECT_BUDGET_SECONDS`, default 70 s). `ALLOW_PRIVATE_TARGETS=true` is a **dev-only** escape hatch for local testing and must never be enabled in production.
+The engine only accepts public HTTP/HTTPS URLs, rejects local/private IP destinations on every request and redirect, disables playlist downloads, and does not attempt DRM or permission bypasses. It can accept an optional per-request Netscape-format `cookies.txt` export from the user's own account for media they are already authorized to access. The session file is used only for that inspection/download request, written with restricted file permissions to a temporary directory, and removed after use; it is not stored as a persistent account credential. The browser user-agent is passed with the session because some sources bind sessions to browser identity. Never upload another person's cookies or a full all-sites cookie export; treat the file like a password. It applies per-IP rate limits, a download-size limit (`MAX_DOWNLOAD_MB`, default 300 MB), a processing-time limit (`MAX_DOWNLOAD_SECONDS`, default 900 s) and an inspect deadline (`INSPECT_BUDGET_SECONDS`, default 70 s). `ALLOW_PRIVATE_TARGETS=true` is a **dev-only** escape hatch for local testing and must never be enabled in production.
 
 Deploy the engine in an isolated environment with restricted network egress before accepting untrusted public traffic; an initial URL check alone cannot fully control every secondary URL requested by third-party extractors.
 
@@ -67,7 +67,7 @@ FFmpeg must be installed for the full conversion feature set. The Dockerfile ins
 No downloader is literally universal in practice:
 
 - yt-dlp covers a large, changing list of websites; an extractor can stop working when a source website changes.
-- Large platforms (YouTube, TikTok, X, Instagram, Facebook) apply bot checks to datacenter IPs, which can block extraction regardless of the code. Success varies by hosting IP reputation, and links requiring login, private access, paid access or DRM are not supported.
+- Large platforms (YouTube, TikTok, X, Instagram, Facebook) apply bot checks to datacenter IPs, which can block extraction regardless of the code. A user's cookies may help with supported sign-in flows, but cannot bypass server-side bot checks, private permissions, paid access or DRM; success varies by hosting IP reputation and source rules.
 - JS-rendered single-page apps expose little media in their initial HTML, so the scraping tier may only find preview images.
 - Downloads must be authorized by the content owner and permitted by the source platform's terms.
 
