@@ -31,14 +31,20 @@ jobs:
       - name: Install website dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Verify FFmpeg binary for legacy direct-media endpoint
-        run: node --input-type=module -e "import ffmpegPath from 'ffmpeg-static'; import { existsSync } from 'node:fs'; if (!ffmpegPath || !existsSync(ffmpegPath)) { console.error('FFmpeg binary is missing'); process.exit(1); } console.log('FFmpeg binary is ready');"
-
-      - name: Check existing Vercel API syntax
+      - name: Verify the single backend route
         run: |
-          node --check api/_lib/media.js
-          node --check api/v1/inspect.js
-          node --check api/v1/download.js
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync } from 'node:fs';
+          const config = JSON.parse(readFileSync('vercel.json', 'utf8'));
+          const proxy = (config.rewrites || []).find((item) => item.source === '/api/:path*');
+          if (proxy?.destination !== 'https://memorableday-downloader-api-id9q.onrender.com/:path*') {
+            throw new Error('Vercel API proxy is not pointing to the active Render service.');
+          }
+          if (existsSync('api/v1/inspect.js') || existsSync('api/v1/download.js')) {
+            throw new Error('Legacy Vercel downloader functions must not shadow the Render proxy.');
+          }
+          console.log('Single backend route is configured correctly.');
+          NODE
 
       - name: Build multi-site downloader container
         run: docker build --tag memorableday-downloader-api:ci ./server

@@ -1,70 +1,68 @@
 # MemorableDay.in
 
-Astro website for MemorableDay.in, preserving the existing landing-page design and assets.
+Astro website for MemorableDay.in. The existing landing-page design and assets are preserved.
 
-## Website
+## Architecture
 
-- Framework: Astro
-- Hosting: Vercel
-- Build: npm install && npm run build
-- Local development: npm run dev
+- Frontend: Astro on Vercel.
+- Downloader API: FastAPI + yt-dlp on Render.
+- Public API path: `https://memorableday.in/api`.
+- Vercel forwards `/api/*` to the active Render service using the external rewrite in `vercel.json`.
+- The browser calls the same-origin `/api` path. Do not set a separate browser-facing Render URL.
 
-The downloader form keeps the existing UI and connects to the separate API at:
+## Downloader API
 
-https://memorableday-downloader-api.onrender.com
-
-You can override the API URL at build time with the PUBLIC_DOWNLOADER_API_URL environment variable.
-
-## Multi-site downloader API
-
-The separate Python service lives in the server/ directory and uses:
+The Python service lives in `server/` and uses:
 
 - FastAPI for the HTTP API.
-- yt-dlp as the extraction engine for websites that its current extractors support.
+- yt-dlp for websites supported by its current extractors.
 - FFmpeg for merging separate audio/video streams and converting audio to MP3.
-- Deno plus yt-dlp-ejs for the current YouTube JavaScript challenge integration.
+- Deno plus yt-dlp-ejs for YouTube JavaScript challenge support.
 - Temporary local files with automatic cleanup after the browser receives the download.
 
-### API endpoints
+### Endpoints
 
-- GET /health — service health and extraction-engine version.
-- POST /v1/inspect — accepts JSON {"url":"https://..."}, returns media title and available formats.
-- POST /v1/download — accepts form fields url and format, then streams the resulting file to the browser.
+- `GET /health` — service health and extraction-engine version.
+- `POST /v1/inspect` — accepts JSON `{"url":"https://..."}` and returns media details plus available formats.
+- `POST /v1/download` — accepts form fields `url` and `format`, then returns the generated file.
+
+The public production paths are:
+
+- `https://memorableday.in/api/health`
+- `https://memorableday.in/api/v1/inspect`
+- `https://memorableday.in/api/v1/download`
 
 ### Format IDs
 
-- best — best available video and audio combination.
-- p1080, p720, etc. — video at or below the selected resolution when available.
-- audio — original audio.
-- mp3 — audio converted to MP3 at 192 kbps.
+- `best` — best available video and audio combination.
+- `p1080`, `p720`, etc. — video at or below the selected resolution when available.
+- `audio` — original audio.
+- `mp3` — audio converted to MP3 at 192 kbps.
 
-The API only accepts public HTTP/HTTPS URLs, rejects local/private IP destinations at the submitted URL, disables playlist downloads, does not load browser cookies, and does not attempt DRM or authentication bypasses. It applies request limits, a download-size limit and a processing-time limit. The service should be deployed in an isolated environment with restricted network egress before accepting untrusted public traffic; an initial URL check alone cannot fully control every secondary URL requested by third-party extractors.
+## Tests
 
-### Build and test the API locally
+The GitHub Actions workflow validates the Vercel-to-Render route configuration, builds the downloader Docker image (including its Python unit tests), performs an API health smoke test, and builds the Astro frontend.
 
-~~~sh
+Run backend unit tests locally:
+
+```sh
 cd server
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 python -m unittest -v test_app
-uvicorn app:app --host 0.0.0.0 --port 10000
-~~~
+```
 
-FFmpeg and Deno must be installed for the full extraction/conversion feature set. The Dockerfile installs both automatically.
+## Deployment
 
-### Deploy the API on Render
+The API is deployed as the Render web service `memorableday-downloader-api-id9q`. Its service URL is `https://memorableday-downloader-api-id9q.onrender.com`.
 
-1. Open the Render Dashboard and choose New → Blueprint.
-2. Connect the sandeepdolai/Downloadmedia repository and select the main branch.
-3. Render reads render.yaml and builds the Docker service.
-4. Wait for GET /health to return {"ok":true,...}.
-5. The Vercel frontend uses the service URL https://memorableday-downloader-api.onrender.com. If Render gives the service a different hostname, set Vercel's PUBLIC_DOWNLOADER_API_URL environment variable to that exact URL and redeploy the website.
+The Vercel project uses the external rewrite in `vercel.json` to forward public `/api/*` requests to this Render service. Keep the rewrite destination synchronized if Render ever changes the service hostname.
 
-The Blueprint currently uses Render's Free plan for initial testing. Render states free web services spin down after inactivity and are not suitable for production. Use a paid instance for reliable downloads, and increase CPU/RAM only after measuring real usage.
+## Compatibility and operational limits
 
-## Compatibility and operating limits
+yt-dlp supports many websites, not every website. Extractors can stop working when source websites change. Links that require private access, paid access, login cookies, or DRM bypass are not supported. Users should only download content they own or are authorized to save, in compliance with the source platform's terms.
 
-yt-dlp supports a large and changing list of websites, not literally every website. An extractor can stop working when a source website changes. Links that require login, private access, paid access or DRM are not supported by this service. Downloads must be authorized by the content owner and permitted by the source platform's terms.
+The current backend processes downloads synchronously with bounded in-process concurrency. It has a 300 MB file limit and a 15-minute processing limit. It does not yet use a durable job queue or external object storage.
 
-This first multi-site version runs extraction synchronously with bounded in-process concurrency. A Redis-backed job queue, multiple worker instances, object storage and progress polling are future scaling work; they are not configured in this initial deployment.
+**Render Free is suitable for testing, not production availability.** Free web services spin down after 15 minutes without inbound traffic and typically take about one minute to start again. Their local filesystem is ephemeral and the service may restart. This can interrupt downloads. Keep the current free setup for testing; production-grade, always-on operation requires infrastructure that does not sleep and a tested download-delivery design.
