@@ -66,8 +66,7 @@ export default async function handler(req, res) {
   const canServeLocally =
     (format === 'original' || format === 'mp3') &&
     !isPlainHttpUrl(urlValue) &&
-    !looksLikeManifest(urlValue) &&
-    !cookiesText;
+    !looksLikeManifest(urlValue);
 
   if (!canServeLocally) {
     try {
