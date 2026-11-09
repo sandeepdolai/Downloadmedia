@@ -310,13 +310,13 @@ export function withSizeLimit() {
   });
 }
 
-export async function forwardFileToEngine(res, urlValue, format, timeoutMs = 285000) {
+export async function forwardFileToEngine(res, urlValue, format, session = {}, timeoutMs = 285000) {
   let response;
   try {
     response = await fetch(engineBaseUrl() + '/v1/download', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: urlValue, format }),
+      body: JSON.stringify({ url: urlValue, format, ...session }),
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch {
