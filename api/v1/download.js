@@ -31,7 +31,7 @@ function maxFileSize() {
 }
 
 export const config = {
-  api: { bodyParser: { sizeLimit: '16kb' } }
+  api: { bodyParser: { sizeLimit: '256kb' } }
 };
 
 export default async function handler(req, res) {
@@ -49,6 +49,12 @@ export default async function handler(req, res) {
 
   const urlValue = typeof body.url === 'string' ? body.url.trim() : '';
   const format = typeof body.format === 'string' && body.format ? body.format : 'best';
+  const cookiesText = typeof body.cookies === 'string' ? body.cookies : '';
+  const userAgent = typeof body.user_agent === 'string' ? body.user_agent : '';
+  const session = {
+    ...(cookiesText ? { cookies: cookiesText } : {}),
+    ...(userAgent ? { user_agent: userAgent } : {})
+  };
   if (!urlValue || urlValue.length > 4096) {
     return sendApiError(res, new ApiError(400, 'Provide a media link.'));
   }
@@ -60,11 +66,12 @@ export default async function handler(req, res) {
   const canServeLocally =
     (format === 'original' || format === 'mp3') &&
     !isPlainHttpUrl(urlValue) &&
-    !looksLikeManifest(urlValue);
+    !looksLikeManifest(urlValue) &&
+    !cookiesText;
 
   if (!canServeLocally) {
     try {
-      return await forwardFileToEngine(res, urlValue, format);
+      return await forwardFileToEngine(res, urlValue, format, session);
     } catch (error) {
       return sendApiError(res, error);
     }
@@ -82,7 +89,7 @@ export default async function handler(req, res) {
       if (status === 400 || status === 413) throw error;
       // Unreachable or access-restricted from here: let the engine try with
       // its own client behaviour and extractor cascade.
-      return await forwardFileToEngine(res, urlValue, format);
+      return await forwardFileToEngine(res, urlValue, format, session);
     }
 
     const response = remote.response;
@@ -93,7 +100,7 @@ export default async function handler(req, res) {
       await response.body?.cancel().catch(() => {});
       await dispatcher.close().catch(() => {});
       dispatcher = null;
-      return await forwardFileToEngine(res, urlValue, format);
+      return await forwardFileToEngine(res, urlValue, format, session);
     }
     const contentType = mediaTypeFrom(response);
     const sourceLength = Number.parseInt(response.headers.get('content-length') || '', 10);
