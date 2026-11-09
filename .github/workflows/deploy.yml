@@ -31,19 +31,22 @@ jobs:
       - name: Install website dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Verify the single backend route
+      - name: Verify the Vercel downloader gateway
         run: |
           node --input-type=module <<'NODE'
           import { existsSync, readFileSync } from 'node:fs';
           const config = JSON.parse(readFileSync('vercel.json', 'utf8'));
-          const proxy = (config.rewrites || []).find((item) => item.source === '/api/:path*');
-          if (proxy?.destination !== 'https://memorableday-downloader-api-id9q.onrender.com/:path*') {
-            throw new Error('Vercel API proxy is not pointing to the active Render service.');
+          for (const file of ['api/_lib/media.js', 'api/v1/inspect.js', 'api/v1/download.js']) {
+            if (!existsSync(file)) throw new Error(`Missing Vercel downloader function: ${file}`);
           }
-          if (existsSync('api/v1/inspect.js') || existsSync('api/v1/download.js')) {
-            throw new Error('Legacy Vercel downloader functions must not shadow the Render proxy.');
+          const functions = config.functions || {};
+          if ((functions['api/v1/inspect.js']?.maxDuration || 0) < 30) {
+            throw new Error('The inspect gateway needs a sufficient function duration.');
           }
-          console.log('Single backend route is configured correctly.');
+          if ((functions['api/v1/download.js']?.maxDuration || 0) < 60) {
+            throw new Error('The download gateway needs a sufficient function duration.');
+          }
+          console.log('Vercel downloader gateway functions are present and configured.');
           NODE
 
       - name: Build multi-site downloader container
