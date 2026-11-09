@@ -1,3 +1,5 @@
+export const config = { api: { bodyParser: { sizeLimit: '256kb' } } };
+
 import {
   ApiError,
   forwardJsonToEngine,
@@ -43,7 +45,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    return await forwardJsonToEngine(res, '/v1/inspect', { url: urlValue }, 85000);
+    return await forwardJsonToEngine(res, '/v1/inspect', {
+      url: urlValue,
+      ...(typeof body.cookies === 'string' && body.cookies ? { cookies: body.cookies } : {}),
+      ...(typeof body.user_agent === 'string' && body.user_agent ? { user_agent: body.user_agent } : {})
+    }, 85000);
   } catch (error) {
     return sendApiError(res, error);
   }
