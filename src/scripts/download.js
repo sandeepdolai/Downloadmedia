@@ -7,6 +7,9 @@ const resultTitle = document.querySelector('#download-result-title');
 const resultMeta = document.querySelector('#download-result-meta');
 const formatSelect = document.querySelector('#download-format');
 const selectedDownloadButton = document.querySelector('#download-selected');
+const cookiesInput = document.querySelector('#media-cookies');
+const MAX_COOKIE_FILE_BYTES = 64 * 1024;
+let cookiesText = '';
 
 const apiBase = (downloadForm?.dataset.apiBase || '').replace(/\/+$/, '');
 let inspectedMedia = null;
@@ -42,6 +45,22 @@ async function readApiResponse(response) {
     throw new Error(payload.error || payload.message || `Request failed (${response.status}).`);
   }
   return payload;
+}
+
+function validateCookiesText(value) {
+  const normalized = value.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n');
+  const lines = normalized.split(/\\r?\\n/);
+  if (!['# Netscape HTTP Cookie File', '# HTTP Cookie File'].includes(lines[0]?.trim())) {
+    throw new Error('That file is not a Netscape-format cookies.txt file.');
+  }
+  const validRows = lines.slice(1).filter((line) => {
+    if (!line || (line.startsWith('#') && !line.startsWith('#HttpOnly_'))) return false;
+    const fields = (line.startsWith('#HttpOnly_') ? line.slice(10) : line).split('\\t');
+    return fields.length === 7 && ['TRUE', 'FALSE'].includes(fields[1].toUpperCase()) &&
+      ['TRUE', 'FALSE'].includes(fields[3].toUpperCase()) && Boolean(fields[5]);
+  });
+  if (!validRows.length) throw new Error('No valid cookie entries were found in that file.');
+  return normalized;
 }
 
 function populateFormats(formats) {
@@ -92,7 +111,7 @@ if (
       const response = await fetch(`${apiBase}/v1/inspect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, ...(cookiesText ? { cookies: cookiesText, user_agent: navigator.userAgent } : {}) }),
         signal: AbortSignal.timeout(90000)
       });
       const result = await readApiResponse(response);
@@ -100,7 +119,7 @@ if (
         throw new Error('No downloadable formats were returned for this link.');
       }
 
-      inspectedMedia = { url, result };
+      inspectedMedia = { url, result, cookies: cookiesText, userAgent: cookiesText ? navigator.userAgent : '' };
       resultTitle.textContent = result.title || 'Media file detected';
       resultMeta.textContent = [
         result.contentType,
@@ -132,7 +151,9 @@ if (
     form.action = `${apiBase}/v1/download`;
     form.style.display = 'none';
 
-    for (const [name, value] of [['url', inspectedMedia.url], ['format', format]]) {
+    const downloadFields = [['url', inspectedMedia.url], ['format', format]];
+    if (inspectedMedia.cookies) downloadFields.push(['cookies', inspectedMedia.cookies], ['user_agent', inspectedMedia.userAgent]);
+    for (const [name, value] of downloadFields) {
       const input = document.createElement('input');
       input.type = 'hidden';
       input.name = name;
@@ -145,6 +166,32 @@ if (
     form.submit();
     window.setTimeout(() => form.remove(), 60000);
   });
+
+  if (cookiesInput instanceof HTMLInputElement) {
+    cookiesInput.addEventListener('change', async () => {
+      inspectedMedia = null;
+      resultsPanel.hidden = true;
+      const file = cookiesInput.files?.[0];
+      cookiesText = '';
+      if (!file) {
+        showFeedback('');
+        return;
+      }
+      if (file.size > MAX_COOKIE_FILE_BYTES) {
+        cookiesInput.value = '';
+        showFeedback('The cookies.txt file must be 64 KB or smaller.', true);
+        return;
+      }
+      try {
+        cookiesText = validateCookiesText(await file.text());
+        showFeedback('Your session file is selected for this request. It is not saved in this browser by MemorableDay.');
+      } catch (error) {
+        cookiesInput.value = '';
+        cookiesText = '';
+        showFeedback(error instanceof Error ? error.message : 'Unable to read the cookies file.', true);
+      }
+    });
+  }
 
   mediaUrl.addEventListener('input', () => {
     inspectedMedia = null;
