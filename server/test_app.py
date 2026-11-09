@@ -245,7 +245,7 @@ class SessionCookieTests(unittest.TestCase):
 
     def test_rejects_control_characters_in_user_agent(self):
         with self.assertRaises(HTTPException):
-            validate_user_agent("Mozilla/5.0\\nInjected: header")
+            validate_user_agent("Mozilla/5.0\nInjected: header")
 
     def test_yt_dlp_options_receive_cookie_file_and_user_agent(self):
         options = ydl_base_options("/tmp/session.txt", "Mozilla/5.0 test")
