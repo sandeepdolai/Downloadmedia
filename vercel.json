@@ -1,48 +1,20 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/v1/inspect.js": {
+      "maxDuration": 90
+    },
+    "api/v1/download.js": {
+      "maxDuration": 300
+    }
+  },
   "regions": [
     "bom1"
   ],
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://memorableday-downloader-api-id9q.onrender.com/:path*"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-store, no-cache, must-revalidate, max-age=0"
-        },
-        {
-          "key": "Pragma",
-          "value": "no-cache"
-        },
-        {
-          "key": "Expires",
-          "value": "0"
-        }
-      ]
-    },
-    {
-      "source": "/index.html",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-store, no-cache, must-revalidate, max-age=0"
-        },
-        {
-          "key": "Pragma",
-          "value": "no-cache"
-        },
-        {
-          "key": "Expires",
-          "value": "0"
-        }
-      ]
+      "destination": "https://memorableday-downloader-api.onrender.com/:path*"
     }
   ]
 }

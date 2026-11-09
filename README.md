@@ -1,68 +1,74 @@
 # MemorableDay.in
 
-Astro website for MemorableDay.in. The existing landing-page design and assets are preserved.
+Astro website for MemorableDay.in, preserving the existing landing-page design and assets.
 
-## Architecture
+## Website
 
-- Frontend: Astro on Vercel.
-- Downloader API: FastAPI + yt-dlp on Render.
-- Public API path: `https://memorableday.in/api`.
-- Vercel forwards `/api/*` to the active Render service using the external rewrite in `vercel.json`.
-- The browser calls the same-origin `/api` path. Do not set a separate browser-facing Render URL.
+- Framework: Astro
+- Hosting: Vercel
+- Build: npm install && npm run build
+- Local development: npm run dev
 
-## Downloader API
+The downloader form keeps the existing UI and calls `/api/v1/inspect` and `/api/v1/download` on its own origin.
 
-The Python service lives in `server/` and uses:
+## Universal downloader architecture (v3)
 
-- FastAPI for the HTTP API.
-- yt-dlp for websites supported by its current extractors.
-- FFmpeg for merging separate audio/video streams and converting audio to MP3.
-- Deno plus yt-dlp-ejs for YouTube JavaScript challenge support.
-- Temporary local files with automatic cleanup after the browser receives the download.
+The goal: download media from **any source link** — direct media files, extractor sites, and generic webpages — through one frontend that never changes.
 
-### Endpoints
+Two cooperating backends provide this:
 
-- `GET /health` — service health and extraction-engine version.
-- `POST /v1/inspect` — accepts JSON `{"url":"https://..."}` and returns media details plus available formats.
-- `POST /v1/download` — accepts form fields `url` and `format`, then returns the generated file.
+1. **Vercel gateway functions** (`api/v1/*.js`, Node.js) — the frontend's first hop.
+   - Direct HTTPS media files (video/audio/image) are inspected and streamed **locally** on Vercel with FFmpeg MP3 conversion. This path works even while the engine is waking up.
+   - Everything else — webpages, extractor sites, HTTP links, HLS/DASH manifests — is **forwarded** to the universal engine and the resulting file is streamed back through the same origin.
+   - `DOWNLOADER_API_URL` (default `https://memorableday-downloader-api.onrender.com`) selects the engine.
 
-The public production paths are:
+2. **Universal engine** (`server/`, Python/FastAPI on Render) — a three-tier cascade for every URL:
+   - **Tier 1 — Direct media probe.** A redirect-validated, SSRF-checked `GET Range` request classifies the URL. Direct video/audio/image files are inspected instantly (filename, size, type) and streamed with byte/time caps. Formats: `original`, plus `mp3` (FFmpeg 192 kbps) for audio/video.
+   - **Tier 2 — yt-dlp extraction.** 1800+ extractors (YouTube, Instagram, TikTok, Facebook, Pinterest, Reddit, Vimeo, …) plus yt-dlp's generic extractor, which also handles HLS (`.m3u8`) and DASH (`.mpd`) manifests and many embedded players. Formats: `best`, `p1080`/`p720`/…, `audio`, `mp3`.
+   - **Tier 3 — Generic page scraping.** For any other webpage: the HTML is fetched and parsed for `og:video`, `twitter:player:stream`, JSON-LD `contentUrl`, `<video>`/`<audio>`/`<source>`, `<a>` links to media files, raw `.m3u8`/`.mpd` URLs, and images (`og:image`, `<img>`, `srcset`). Candidates are probed in parallel and offered as `media-1`, `media-2`, … (+ `media-N-mp3` variants). If a page only embeds an iframe player, the engine retries extraction on the embed URL.
 
-- `https://memorableday.in/api/health`
-- `https://memorableday.in/api/v1/inspect`
-- `https://memorableday.in/api/v1/download`
+All tiers share the same API contract, so the frontend never changes:
 
-### Format IDs
+- `GET /health` — service health, engine version.
+- `POST /v1/inspect` — JSON `{"url":"https://..."}` → `{ok, title, contentType, sizeBytes, formats:[{id,label,available}]}`.
+- `POST /v1/download` — form fields `url` + `format` → the media file streamed to the browser.
 
-- `best` — best available video and audio combination.
-- `p1080`, `p720`, etc. — video at or below the selected resolution when available.
-- `audio` — original audio.
-- `mp3` — audio converted to MP3 at 192 kbps.
+### Safety limits
 
-## Tests
+The engine only accepts public HTTP/HTTPS URLs, rejects local/private IP destinations on every request and redirect, disables playlist downloads, does not load browser cookies, and does not attempt DRM or authentication bypasses. It applies per-IP rate limits, a download-size limit (`MAX_DOWNLOAD_MB`, default 300 MB), a processing-time limit (`MAX_DOWNLOAD_SECONDS`, default 900 s) and an inspect deadline (`INSPECT_BUDGET_SECONDS`, default 70 s). `ALLOW_PRIVATE_TARGETS=true` is a **dev-only** escape hatch for local testing and must never be enabled in production.
 
-The GitHub Actions workflow validates the Vercel-to-Render route configuration, builds the downloader Docker image (including its Python unit tests), performs an API health smoke test, and builds the Astro frontend.
+Deploy the engine in an isolated environment with restricted network egress before accepting untrusted public traffic; an initial URL check alone cannot fully control every secondary URL requested by third-party extractors.
 
-Run backend unit tests locally:
+### Deploy the engine on Render
 
-```sh
+1. Open the Render Dashboard and choose New → Blueprint.
+2. Connect the sandeepdolai/DownloadMediaMemorable repository and select the main branch.
+3. Render reads `render.yaml` and builds the Docker service (includes FFmpeg and Deno).
+4. Wait for `GET /health` to return `{"ok":true,...,"universal":true}`.
+5. If Render assigns a different hostname than `memorableday-downloader-api.onrender.com`, set Vercel's `DOWNLOADER_API_URL` environment variable to that exact URL and redeploy the website. Also update the rewrite destination in `vercel.json`.
+
+The Blueprint uses Render's Free plan for initial testing. Free services spin down after inactivity (the first request then waits ~30-60 s for a cold start; the frontend shows a friendly "engine is waking up" message). Use a paid instance for reliable downloads.
+
+### Build and test the engine locally
+
+~~~sh
 cd server
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 python -m unittest -v test_app
-```
+ALLOW_PRIVATE_TARGETS=true uvicorn app:app --host 0.0.0.0 --port 10000
+~~~
 
-## Deployment
+FFmpeg must be installed for the full conversion feature set. The Dockerfile installs it automatically.
 
-The API is deployed as the Render web service `memorableday-downloader-api-id9q`. Its service URL is `https://memorableday-downloader-api-id9q.onrender.com`.
+## Compatibility and operating limits
 
-The Vercel project uses the external rewrite in `vercel.json` to forward public `/api/*` requests to this Render service. Keep the rewrite destination synchronized if Render ever changes the service hostname.
+No downloader is literally universal in practice:
 
-## Compatibility and operational limits
+- yt-dlp covers a large, changing list of websites; an extractor can stop working when a source website changes.
+- Large platforms (YouTube, TikTok, X, Instagram, Facebook) apply bot checks to datacenter IPs, which can block extraction regardless of the code. Success varies by hosting IP reputation, and links requiring login, private access, paid access or DRM are not supported.
+- JS-rendered single-page apps expose little media in their initial HTML, so the scraping tier may only find preview images.
+- Downloads must be authorized by the content owner and permitted by the source platform's terms.
 
-yt-dlp supports many websites, not every website. Extractors can stop working when source websites change. Links that require private access, paid access, login cookies, or DRM bypass are not supported. Users should only download content they own or are authorized to save, in compliance with the source platform's terms.
-
-The current backend processes downloads synchronously with bounded in-process concurrency. It has a 300 MB file limit and a 15-minute processing limit. It does not yet use a durable job queue or external object storage.
-
-**Render Free is suitable for testing, not production availability.** Free web services spin down after 15 minutes without inbound traffic and typically take about one minute to start again. Their local filesystem is ephemeral and the service may restart. This can interrupt downloads. Keep the current free setup for testing; production-grade, always-on operation requires infrastructure that does not sleep and a tested download-delivery design.
+This version still runs extraction synchronously with bounded in-process concurrency. A Redis-backed job queue, multiple worker instances, object storage and progress polling are future scaling work.
